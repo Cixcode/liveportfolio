@@ -14,11 +14,23 @@ const INITIAL_PROJECTS = [
 
 // Supabase Client Setup
 const SUPABASE_URL = 'https://jryrkpkzzrvgawkmljvt.supabase.co';
-const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY'; // Replace with your anon public key
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY'; // Replace with your Project anon key from Supabase Settings -> API
 
-// 1. Trigger GitHub OAuth
+let supabase = null;
+if (window.supabase && SUPABASE_ANON_KEY !== 'YOUR_SUPABASE_ANON_KEY') {
+  supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+}
+
+let currentUser = null;
+let projects = [];
+let isExpanded = false;
+
+/* 1. Trigger GitHub OAuth */
 async function handleGitHubAuth() {
+  if (!supabase) {
+    alert("Please configure your SUPABASE_ANON_KEY inside script.js first.");
+    return;
+  }
   const { error } = await supabase.auth.signInWithOAuth({
     provider: 'github',
     options: {
@@ -31,31 +43,33 @@ async function handleGitHubAuth() {
   }
 }
 
-// 2. Capture Redirect and Record User & Login Audit
+/* 2. Check and Sync Active Session */
 async function checkAuthSession() {
-  const { data: { session } } = await supabase.auth.getSession();
+  if (!supabase) return;
 
-  if (session && session.user) {
-    const userMeta = session.user.user_metadata;
-    const email = session.user.email || `${session.user.user_metadata.user_name}@users.noreply.github.com`;
-    const fullName = userMeta.full_name || userMeta.name || userMeta.user_name || 'GitHub User';
-    const nameParts = fullName.split(' ');
-    const firstName = nameParts[0] || 'GitHub';
-    const lastName = nameParts.slice(1).join(' ') || 'User';
-    const username = userMeta.user_name || email.split('@')[0];
+  const { data: { session }, error } = await supabase.auth.getSession();
+  if (error || !session || !session.user) return;
 
-    // Check if user exists in custom users table
+  const userMeta = session.user.user_metadata || {};
+  const email = session.user.email || `${userMeta.user_name || 'user'}@users.noreply.github.com`;
+  const fullName = userMeta.full_name || userMeta.name || userMeta.user_name || 'GitHub User';
+  const nameParts = fullName.split(' ');
+  const firstName = nameParts[0] || 'GitHub';
+  const lastName = nameParts.slice(1).join(' ') || 'User';
+  const username = userMeta.user_name || email.split('@')[0];
+
+  // Try to sync with Supabase custom table
+  try {
     const { data: existingUser } = await supabase
       .from('users')
       .select('*')
       .eq('email', email)
       .maybeSingle();
 
-    let activeUser = existingUser;
+    let targetUser = existingUser;
 
     if (!existingUser) {
-      // Register account in directory
-      const { data: createdUser, error: insertError } = await supabase
+      const { data: newUser, error: insertError } = await supabase
         .from('users')
         .insert([{
           first_name: firstName,
@@ -68,57 +82,65 @@ async function checkAuthSession() {
         .select()
         .single();
 
-      if (!insertError) activeUser = createdUser;
+      if (!insertError) targetUser = newUser;
     }
 
-    if (activeUser && activeUser.status !== 'suspended') {
-      // Record login attempt in audit logs
-      await supabase.from('login_audit_logs').insert([{
-        user_id: activeUser.id,
-        full_name: `${activeUser.first_name} ${activeUser.last_name}`,
-        username: activeUser.username,
-        email: activeUser.email,
-        auth_method: 'GitHub OAuth'
-      }]);
-
-      currentUser = activeUser;
-      sessionStorage.setItem('portfolio_active_session', JSON.stringify(activeUser));
-      updateNavState();
-    } else if (activeUser?.status === 'suspended') {
+    if (targetUser && targetUser.status === 'suspended') {
       alert("This account is suspended.");
       await supabase.auth.signOut();
+      localStorage.removeItem(SESSION_KEY);
+      currentUser = null;
+      updateNavState();
+      return;
     }
+
+    // Record login audit log
+    if (targetUser) {
+      await supabase.from('login_audit_logs').insert([{
+        user_id: targetUser.id,
+        full_name: `${targetUser.first_name} ${targetUser.last_name}`,
+        username: targetUser.username,
+        email: targetUser.email,
+        auth_method: 'GitHub OAuth'
+      }]);
+    }
+
+    const sessionData = {
+      id: targetUser ? targetUser.id : session.user.id,
+      firstName: targetUser ? targetUser.first_name : firstName,
+      lastName: targetUser ? targetUser.last_name : lastName,
+      username: targetUser ? targetUser.username : username,
+      email: email,
+      role: targetUser ? targetUser.role : 'client',
+      provider: 'github'
+    };
+
+    currentUser = sessionData;
+    localStorage.setItem(SESSION_KEY, JSON.stringify(sessionData));
+    updateNavState();
+  } catch (err) {
+    console.warn("Supabase sync bypassed, falling back to local session:", err);
   }
 }
 
-// 3. Hook into window initialization
-window.addEventListener('DOMContentLoaded', () => {
-  initApp();
-  checkAuthSession();
-});
-
-let currentUser = null;
-let projects = [];
-let isExpanded = false;
-
-/* 1. Initialize State */
+/* 3. Initialize App State */
 function initApp() {
-  // Ensure storage registries exist
   if (!localStorage.getItem(USERS_DB_KEY)) localStorage.setItem(USERS_DB_KEY, JSON.stringify([]));
   if (!localStorage.getItem(LOGS_DB_KEY)) localStorage.setItem(LOGS_DB_KEY, JSON.stringify([]));
 
-  // Load Session
   const activeSession = localStorage.getItem(SESSION_KEY);
   if (activeSession) {
-    currentUser = JSON.parse(activeSession);
+    try {
+      currentUser = JSON.parse(activeSession);
+    } catch {
+      localStorage.removeItem(SESSION_KEY);
+    }
   }
   updateNavState();
 
-  // Load Projects
   const localProjects = localStorage.getItem(PROJECTS_KEY);
   projects = localProjects ? JSON.parse(localProjects) : [...INITIAL_PROJECTS];
 
-  // Intercept shared link parameters (?pinned=id1,id2)
   const params = new URLSearchParams(window.location.search);
   const shared = params.get('pinned');
   if (shared) {
@@ -127,30 +149,32 @@ function initApp() {
   }
 
   renderGrid();
+  initCanvas();
 }
 
-/* 2. Navigation State Engine */
+/* 4. Dynamic Header Navigation */
 function updateNavState() {
   const container = document.getElementById('navActions');
   if (!container) return;
 
   if (currentUser) {
     container.innerHTML = `
-      <span class="user-badge">Hello, <strong>${currentUser.firstName}</strong></span>
-      <button class="btn-secondary" onclick="sharePinnedLink()">Share Curated Link</button>
+      <span class="user-badge">Hello, <strong>${currentUser.firstName || currentUser.username}</strong></span>
+      <a href="admin.html" class="btn-secondary" style="text-decoration:none;">Admin</a>
+      <button class="btn-secondary" onclick="sharePinnedLink()">Share Curated</button>
       <button class="btn-primary" onclick="toggleModal('uploadModal', true)">+ Add Project</button>
       <button class="btn-secondary" onclick="handleLogout()">Log Out</button>
     `;
   } else {
     container.innerHTML = `
-      <button class="btn-secondary" onclick="sharePinnedLink()">Share Curated Link</button>
+      <button class="btn-secondary" onclick="sharePinnedLink()">Share Curated</button>
       <button class="btn-secondary" onclick="toggleModal('loginModal', true)">Log In</button>
       <button class="btn-primary" onclick="toggleModal('signupModal', true)">Sign Up</button>
     `;
   }
 }
 
-/* 3. Authentication: Sign Up */
+/* 5. Standard Form Auth */
 function handleSignup(e) {
   e.preventDefault();
   const firstName = document.getElementById('regFirstName').value.trim();
@@ -161,13 +185,12 @@ function handleSignup(e) {
 
   const users = JSON.parse(localStorage.getItem(USERS_DB_KEY)) || [];
 
-  // Check unique constraints
   if (users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
-    alert("Username is already taken. Choose another.");
+    alert("Username is already taken.");
     return;
   }
   if (users.some(u => u.email.toLowerCase() === email.toLowerCase())) {
-    alert("Email address already registered. Please log in.");
+    alert("Email address is already registered.");
     return;
   }
 
@@ -177,7 +200,7 @@ function handleSignup(e) {
     lastName,
     username,
     email,
-    password, // For full production, hash on server
+    password,
     provider: 'local',
     status: 'active',
     registeredAt: new Date().toISOString(),
@@ -187,13 +210,11 @@ function handleSignup(e) {
   users.push(newUser);
   localStorage.setItem(USERS_DB_KEY, JSON.stringify(users));
 
-  // Automatically log in and record initial activity log
   loginUser(newUser, 'Standard Registration');
   toggleModal('signupModal', false);
   document.getElementById('signupForm').reset();
 }
 
-/* 4. Authentication: Login */
 function handleLogin(e) {
   e.preventDefault();
   const identifier = document.getElementById('loginIdentifier').value.trim().toLowerCase();
@@ -206,12 +227,12 @@ function handleLogin(e) {
   );
 
   if (!user) {
-    alert("Invalid credentials. Verify your username/password and try again.");
+    alert("Invalid username/email or password.");
     return;
   }
 
   if (user.status === 'suspended') {
-    alert("This account has been suspended by the administrator.");
+    alert("This account is suspended.");
     return;
   }
 
@@ -220,39 +241,7 @@ function handleLogin(e) {
   document.getElementById('loginForm').reset();
 }
 
-/* 5. Google Sign Up Simulation */
-function handleGoogleAuth() {
-  const dummyGoogleEmail = prompt("Simulate Google Account Email:", "creative@gmail.com");
-  if (!dummyGoogleEmail) return;
-
-  const users = JSON.parse(localStorage.getItem(USERS_DB_KEY)) || [];
-  let user = users.find(u => u.email.toLowerCase() === dummyGoogleEmail.toLowerCase());
-
-  if (!user) {
-    const nameParts = dummyGoogleEmail.split('@')[0].split('.');
-    user = {
-      id: 'usr_g_' + Date.now(),
-      firstName: nameParts[0].charAt(0).toUpperCase() + nameParts[0].slice(1),
-      lastName: nameParts[1] ? nameParts[1].charAt(0).toUpperCase() + nameParts[1].slice(1) : 'GoogleUser',
-      username: dummyGoogleEmail.split('@')[0],
-      email: dummyGoogleEmail.toLowerCase(),
-      password: null,
-      provider: 'google',
-      status: 'active',
-      registeredAt: new Date().toISOString(),
-      loginCount: 0
-    };
-    users.push(user);
-    localStorage.setItem(USERS_DB_KEY, JSON.stringify(users));
-  }
-
-  loginUser(user, 'Google OAuth');
-  toggleModal('signupModal', false);
-}
-
-/* 6. Universal Login & Audit Logger */
 function loginUser(user, method) {
-  // Update user stats
   const users = JSON.parse(localStorage.getItem(USERS_DB_KEY)) || [];
   const idx = users.findIndex(u => u.id === user.id);
   if (idx !== -1) {
@@ -261,9 +250,8 @@ function loginUser(user, method) {
     localStorage.setItem(USERS_DB_KEY, JSON.stringify(users));
   }
 
-  // Register in centralized audit log
   const logs = JSON.parse(localStorage.getItem(LOGS_DB_KEY)) || [];
-  const logEntry = {
+  logs.unshift({
     id: 'log_' + Date.now(),
     userId: user.id,
     fullName: `${user.firstName} ${user.lastName}`,
@@ -271,23 +259,24 @@ function loginUser(user, method) {
     email: user.email,
     authMethod: method,
     timestamp: new Date().toISOString()
-  };
-  logs.unshift(logEntry);
+  });
   localStorage.setItem(LOGS_DB_KEY, JSON.stringify(logs));
 
-  // Save Active Session
   currentUser = user;
   localStorage.setItem(SESSION_KEY, JSON.stringify(user));
   updateNavState();
 }
 
-function handleLogout() {
+async function handleLogout() {
+  if (supabase) {
+    await supabase.auth.signOut();
+  }
   currentUser = null;
   localStorage.removeItem(SESSION_KEY);
   updateNavState();
 }
 
-/* 7. Modal Switching & Rendering */
+/* 6. Modal Toggles */
 function toggleModal(id, show) {
   const el = document.getElementById(id);
   if (el) el.classList.toggle('active', show);
@@ -298,7 +287,7 @@ function switchModals(fromId, toId) {
   toggleModal(toId, true);
 }
 
-/* 8. Portfolio Rendering & Pinning */
+/* 7. Grid & Project Interactions */
 function renderGrid() {
   const grid = document.getElementById('portfolioGrid');
   if (!grid) return;
@@ -320,7 +309,7 @@ function renderGrid() {
           <span>${p.category}</span>
         </div>
         <div class="card-actions">
-          <button class="icon-btn ${p.pinned ? 'pinned' : ''}" title="Pin to top (max 3)" onclick="togglePin('${p.id}')">
+          <button class="icon-btn ${p.pinned ? 'pinned' : ''}" title="Pin to top" onclick="togglePin('${p.id}')">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="${p.pinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
             </svg>
@@ -351,7 +340,7 @@ function togglePin(id) {
 
   const activePins = projects.filter(p => p.pinned);
   if (!target.pinned && activePins.length >= 3) {
-    alert("Limit reached: You can only pin up to 3 projects at once.");
+    alert("Limit reached: You can pin a maximum of 3 projects.");
     return;
   }
 
@@ -378,14 +367,13 @@ function handleProjectSubmit(e) {
 
   const reader = new FileReader();
   reader.onload = (event) => {
-    const item = {
+    projects.unshift({
       id: Date.now().toString(),
       title,
       category,
       img: event.target.result,
       pinned: false
-    };
-    projects.unshift(item);
+    });
     localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
     toggleModal('uploadModal', false);
     document.getElementById('projectForm').reset();
@@ -402,21 +390,23 @@ function toggleSeeMore() {
 function sharePinnedLink() {
   const pinnedIds = projects.filter(p => p.pinned).map(p => p.id);
   if (!pinnedIds.length) {
-    alert("Pin at least one project using the star icon before sharing!");
+    alert("Pin at least one project using the star icon first!");
     return;
   }
   const url = new URL(window.location.href);
   url.searchParams.set('pinned', pinnedIds.join(','));
   navigator.clipboard.writeText(url.toString()).then(() => {
-    alert("Custom showcase link copied!\n\n" + url.toString());
+    alert("Showcase link copied to clipboard!");
   }).catch(() => {
     prompt("Copy this share link:", url.toString());
   });
 }
 
-/* 9. Hero Canvas Motion */
-const canvas = document.getElementById('heroCanvas');
-if (canvas) {
+/* 8. Hero Graphics Animation */
+function initCanvas() {
+  const canvas = document.getElementById('heroCanvas');
+  if (!canvas) return;
+
   const ctx = canvas.getContext('2d');
   let width, height, t = 0;
 
@@ -452,4 +442,8 @@ if (canvas) {
   renderMotion();
 }
 
-window.addEventListener('DOMContentLoaded', initApp);
+// Single Event Listener Entry Point
+window.addEventListener('DOMContentLoaded', () => {
+  initApp();
+  checkAuthSession();
+});
