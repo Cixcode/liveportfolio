@@ -12,17 +12,17 @@ const INITIAL_PROJECTS = [
   { id: '5', title: "Mono Font", category: "Typography", img: "https://images.unsplash.com/photo-1541701494587-cb58502866ab?auto=format&fit=crop&w=700&q=80", pinned: false }
 ];
 
-// Supabase Client Setup
+// Supabase Configuration
 const SUPABASE_URL = 'https://jryrkpkzzrvgawkmljvt.supabase.co';
-const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY'; // Replace when ready
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY'; // Replace with your anon key from Supabase Settings -> API
 
-let supabase = null;
+let supabaseClient = null;
 try {
   if (window.supabase && SUPABASE_ANON_KEY && !SUPABASE_ANON_KEY.includes('YOUR_SUPABASE')) {
-    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   }
 } catch (e) {
-  console.warn("Supabase client not initialized yet; running in offline/demo mode.", e);
+  console.warn("Supabase running in local/fallback mode.", e);
 }
 
 let currentUser = null;
@@ -31,11 +31,11 @@ let isExpanded = false;
 
 /* 1. Trigger GitHub OAuth */
 async function handleGitHubAuth() {
-  if (!supabase) {
-    alert("Please configure your SUPABASE_ANON_KEY inside script.js first.");
+  if (!supabaseClient) {
+    alert("Please configure your Supabase Anon Key in script.js to connect GitHub Auth.");
     return;
   }
-  const { error } = await supabase.auth.signInWithOAuth({
+  const { error } = await supabaseClient.auth.signInWithOAuth({
     provider: 'github',
     options: {
       redirectTo: window.location.origin
@@ -49,22 +49,21 @@ async function handleGitHubAuth() {
 
 /* 2. Check and Sync Active Session */
 async function checkAuthSession() {
-  if (!supabase) return;
+  if (!supabaseClient) return;
 
-  const { data: { session }, error } = await supabase.auth.getSession();
-  if (error || !session || !session.user) return;
-
-  const userMeta = session.user.user_metadata || {};
-  const email = session.user.email || `${userMeta.user_name || 'user'}@users.noreply.github.com`;
-  const fullName = userMeta.full_name || userMeta.name || userMeta.user_name || 'GitHub User';
-  const nameParts = fullName.split(' ');
-  const firstName = nameParts[0] || 'GitHub';
-  const lastName = nameParts.slice(1).join(' ') || 'User';
-  const username = userMeta.user_name || email.split('@')[0];
-
-  // Try to sync with Supabase custom table
   try {
-    const { data: existingUser } = await supabase
+    const { data: { session }, error } = await supabaseClient.auth.getSession();
+    if (error || !session || !session.user) return;
+
+    const userMeta = session.user.user_metadata || {};
+    const email = session.user.email || `${userMeta.user_name || 'user'}@users.noreply.github.com`;
+    const fullName = userMeta.full_name || userMeta.name || userMeta.user_name || 'GitHub User';
+    const nameParts = fullName.split(' ');
+    const firstName = nameParts[0] || 'GitHub';
+    const lastName = nameParts.slice(1).join(' ') || 'User';
+    const username = userMeta.user_name || email.split('@')[0];
+
+    const { data: existingUser } = await supabaseClient
       .from('users')
       .select('*')
       .eq('email', email)
@@ -73,7 +72,7 @@ async function checkAuthSession() {
     let targetUser = existingUser;
 
     if (!existingUser) {
-      const { data: newUser, error: insertError } = await supabase
+      const { data: newUser, error: insertError } = await supabaseClient
         .from('users')
         .insert([{
           first_name: firstName,
@@ -90,17 +89,16 @@ async function checkAuthSession() {
     }
 
     if (targetUser && targetUser.status === 'suspended') {
-      alert("This account is suspended.");
-      await supabase.auth.signOut();
+      alert("This account has been suspended.");
+      await supabaseClient.auth.signOut();
       localStorage.removeItem(SESSION_KEY);
       currentUser = null;
       updateNavState();
       return;
     }
 
-    // Record login audit log
     if (targetUser) {
-      await supabase.from('login_audit_logs').insert([{
+      await supabaseClient.from('login_audit_logs').insert([{
         user_id: targetUser.id,
         full_name: `${targetUser.first_name} ${targetUser.last_name}`,
         username: targetUser.username,
@@ -123,11 +121,11 @@ async function checkAuthSession() {
     localStorage.setItem(SESSION_KEY, JSON.stringify(sessionData));
     updateNavState();
   } catch (err) {
-    console.warn("Supabase sync bypassed, falling back to local session:", err);
+    console.warn("Session check bypassed:", err);
   }
 }
 
-/* 3. Initialize App State */
+/* 3. Initialize State */
 function initApp() {
   if (!localStorage.getItem(USERS_DB_KEY)) localStorage.setItem(USERS_DB_KEY, JSON.stringify([]));
   if (!localStorage.getItem(LOGS_DB_KEY)) localStorage.setItem(LOGS_DB_KEY, JSON.stringify([]));
@@ -143,7 +141,9 @@ function initApp() {
   updateNavState();
 
   const localProjects = localStorage.getItem(PROJECTS_KEY);
-  projects = localProjects ? JSON.parse(localProjects) : [...INITIAL_PROJECTS];
+  projects = (localProjects && JSON.parse(localProjects).length > 0)
+    ? JSON.parse(localProjects)
+    : [...INITIAL_PROJECTS];
 
   const params = new URLSearchParams(window.location.search);
   const shared = params.get('pinned');
@@ -156,7 +156,7 @@ function initApp() {
   initCanvas();
 }
 
-/* 4. Dynamic Header Navigation */
+/* 4. Navigation State Engine */
 function updateNavState() {
   const container = document.getElementById('navActions');
   if (!container) return;
@@ -178,7 +178,7 @@ function updateNavState() {
   }
 }
 
-/* 5. Standard Form Auth */
+/* 5. Form Authentication */
 function handleSignup(e) {
   e.preventDefault();
   const firstName = document.getElementById('regFirstName').value.trim();
@@ -190,11 +190,11 @@ function handleSignup(e) {
   const users = JSON.parse(localStorage.getItem(USERS_DB_KEY)) || [];
 
   if (users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
-    alert("Username is already taken.");
+    alert("Username is already taken. Choose another.");
     return;
   }
   if (users.some(u => u.email.toLowerCase() === email.toLowerCase())) {
-    alert("Email address is already registered.");
+    alert("Email address already registered. Please log in.");
     return;
   }
 
@@ -231,12 +231,12 @@ function handleLogin(e) {
   );
 
   if (!user) {
-    alert("Invalid username/email or password.");
+    alert("Invalid credentials. Verify your username/password and try again.");
     return;
   }
 
   if (user.status === 'suspended') {
-    alert("This account is suspended.");
+    alert("This account has been suspended by the administrator.");
     return;
   }
 
@@ -255,7 +255,7 @@ function loginUser(user, method) {
   }
 
   const logs = JSON.parse(localStorage.getItem(LOGS_DB_KEY)) || [];
-  logs.unshift({
+  const logEntry = {
     id: 'log_' + Date.now(),
     userId: user.id,
     fullName: `${user.firstName} ${user.lastName}`,
@@ -263,7 +263,8 @@ function loginUser(user, method) {
     email: user.email,
     authMethod: method,
     timestamp: new Date().toISOString()
-  });
+  };
+  logs.unshift(logEntry);
   localStorage.setItem(LOGS_DB_KEY, JSON.stringify(logs));
 
   currentUser = user;
@@ -272,15 +273,15 @@ function loginUser(user, method) {
 }
 
 async function handleLogout() {
-  if (supabase) {
-    await supabase.auth.signOut();
+  if (supabaseClient) {
+    await supabaseClient.auth.signOut();
   }
   currentUser = null;
   localStorage.removeItem(SESSION_KEY);
   updateNavState();
 }
 
-/* 6. Modal Toggles */
+/* 6. Modal Controls */
 function toggleModal(id, show) {
   const el = document.getElementById(id);
   if (el) el.classList.toggle('active', show);
@@ -291,7 +292,7 @@ function switchModals(fromId, toId) {
   toggleModal(toId, true);
 }
 
-/* 7. Grid & Project Interactions */
+/* 7. Grid Rendering & Pinning */
 function renderGrid() {
   const grid = document.getElementById('portfolioGrid');
   if (!grid) return;
@@ -313,7 +314,7 @@ function renderGrid() {
           <span>${p.category}</span>
         </div>
         <div class="card-actions">
-          <button class="icon-btn ${p.pinned ? 'pinned' : ''}" title="Pin to top" onclick="togglePin('${p.id}')">
+          <button class="icon-btn ${p.pinned ? 'pinned' : ''}" title="Pin to top (max 3)" onclick="togglePin('${p.id}')">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="${p.pinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
             </svg>
@@ -344,7 +345,7 @@ function togglePin(id) {
 
   const activePins = projects.filter(p => p.pinned);
   if (!target.pinned && activePins.length >= 3) {
-    alert("Limit reached: You can pin a maximum of 3 projects.");
+    alert("Limit reached: You can only pin up to 3 projects at once.");
     return;
   }
 
@@ -371,13 +372,14 @@ function handleProjectSubmit(e) {
 
   const reader = new FileReader();
   reader.onload = (event) => {
-    projects.unshift({
+    const item = {
       id: Date.now().toString(),
       title,
       category,
       img: event.target.result,
       pinned: false
-    });
+    };
+    projects.unshift(item);
     localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
     toggleModal('uploadModal', false);
     document.getElementById('projectForm').reset();
@@ -394,19 +396,19 @@ function toggleSeeMore() {
 function sharePinnedLink() {
   const pinnedIds = projects.filter(p => p.pinned).map(p => p.id);
   if (!pinnedIds.length) {
-    alert("Pin at least one project using the star icon first!");
+    alert("Pin at least one project using the star icon before sharing!");
     return;
   }
   const url = new URL(window.location.href);
   url.searchParams.set('pinned', pinnedIds.join(','));
   navigator.clipboard.writeText(url.toString()).then(() => {
-    alert("Showcase link copied to clipboard!");
+    alert("Custom showcase link copied!\n\n" + url.toString());
   }).catch(() => {
     prompt("Copy this share link:", url.toString());
   });
 }
 
-/* 8. Hero Graphics Animation */
+/* 8. Hero Canvas Motion */
 function initCanvas() {
   const canvas = document.getElementById('heroCanvas');
   if (!canvas) return;
@@ -446,15 +448,8 @@ function initCanvas() {
   renderMotion();
 }
 
-// Single Event Listener Entry Point
+/* Single Lifecycle Initialization */
 window.addEventListener('DOMContentLoaded', () => {
-  try {
-    initApp();
-  } catch (err) {
-    console.error("Initialization error:", err);
-  }
-  
-  if (supabase) {
-    checkAuthSession();
-  }
+  initApp();
+  checkAuthSession();
 });
