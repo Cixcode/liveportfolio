@@ -41,6 +41,27 @@ header {
   color: var(--muted);
   margin-right: 0.5rem;
 }
+
+.github-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  background: #24292f;
+  color: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  margin-bottom: 1.25rem;
+  transition: background-color 0.2s;
+}
+.github-btn:hover {
+  background: #1b1f23;
+}
 .user-badge strong { color: var(--text); }
 
 button { font-family: inherit; }

@@ -12,6 +12,91 @@ const INITIAL_PROJECTS = [
   { id: '5', title: "Mono Font", category: "Typography", img: "https://images.unsplash.com/photo-1541701494587-cb58502866ab?auto=format&fit=crop&w=700&q=80", pinned: false }
 ];
 
+// Supabase Client Setup
+const SUPABASE_URL = 'https://jryrkpkzzrvgawkmljvt.supabase.co';
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY'; // Replace with your anon public key
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// 1. Trigger GitHub OAuth
+async function handleGitHubAuth() {
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: 'github',
+    options: {
+      redirectTo: window.location.origin
+    }
+  });
+
+  if (error) {
+    alert("GitHub authentication error: " + error.message);
+  }
+}
+
+// 2. Capture Redirect and Record User & Login Audit
+async function checkAuthSession() {
+  const { data: { session } } = await supabase.auth.getSession();
+
+  if (session && session.user) {
+    const userMeta = session.user.user_metadata;
+    const email = session.user.email || `${session.user.user_metadata.user_name}@users.noreply.github.com`;
+    const fullName = userMeta.full_name || userMeta.name || userMeta.user_name || 'GitHub User';
+    const nameParts = fullName.split(' ');
+    const firstName = nameParts[0] || 'GitHub';
+    const lastName = nameParts.slice(1).join(' ') || 'User';
+    const username = userMeta.user_name || email.split('@')[0];
+
+    // Check if user exists in custom users table
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .maybeSingle();
+
+    let activeUser = existingUser;
+
+    if (!existingUser) {
+      // Register account in directory
+      const { data: createdUser, error: insertError } = await supabase
+        .from('users')
+        .insert([{
+          first_name: firstName,
+          last_name: lastName,
+          username: username,
+          email: email,
+          auth_provider: 'github',
+          status: 'active'
+        }])
+        .select()
+        .single();
+
+      if (!insertError) activeUser = createdUser;
+    }
+
+    if (activeUser && activeUser.status !== 'suspended') {
+      // Record login attempt in audit logs
+      await supabase.from('login_audit_logs').insert([{
+        user_id: activeUser.id,
+        full_name: `${activeUser.first_name} ${activeUser.last_name}`,
+        username: activeUser.username,
+        email: activeUser.email,
+        auth_method: 'GitHub OAuth'
+      }]);
+
+      currentUser = activeUser;
+      sessionStorage.setItem('portfolio_active_session', JSON.stringify(activeUser));
+      updateNavState();
+    } else if (activeUser?.status === 'suspended') {
+      alert("This account is suspended.");
+      await supabase.auth.signOut();
+    }
+  }
+}
+
+// 3. Hook into window initialization
+window.addEventListener('DOMContentLoaded', () => {
+  initApp();
+  checkAuthSession();
+});
+
 let currentUser = null;
 let projects = [];
 let isExpanded = false;
