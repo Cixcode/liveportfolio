@@ -14,7 +14,7 @@ const INITIAL_PROJECTS = [
 
 // Supabase Configuration
 const SUPABASE_URL = 'https://jryrkpkzzrvgawkmljvt.supabase.co';
-const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY'; // Replace with your anon key from Supabase Settings -> API
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpyeXJrcGt6enJ2Z2F3a21sanZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkyNDg2NjUsImV4cCI6MjEwNDgyNDY2NX0.Xed8gIPkFlPjxbxg0wXWRxgvR0mwWApKwbW6vG4dxLU'; // Replace with your anon key from Supabase Settings -> API
 
 let supabaseClient = null;
 try {
