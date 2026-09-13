@@ -157,14 +157,21 @@ function initApp() {
 }
 
 /* 4. Navigation State Engine */
+/* 4. Dynamic Header Navigation */
 function updateNavState() {
   const container = document.getElementById('navActions');
   if (!container) return;
 
   if (currentUser) {
+    // Only display the Admin button if the user is an explicit admin
+    const isAdmin = currentUser.role === 'admin' || currentUser.username === 'admin';
+    const adminButton = isAdmin 
+      ? `<a href="admin.html" class="btn-secondary" style="text-decoration:none;">Admin</a>` 
+      : '';
+
     container.innerHTML = `
       <span class="user-badge">Hello, <strong>${currentUser.firstName || currentUser.username}</strong></span>
-      <a href="admin.html" class="btn-secondary" style="text-decoration:none;">Admin</a>
+      ${adminButton}
       <button class="btn-secondary" onclick="sharePinnedLink()">Share Curated</button>
       <button class="btn-primary" onclick="toggleModal('uploadModal', true)">+ Add Project</button>
       <button class="btn-secondary" onclick="handleLogout()">Log Out</button>
