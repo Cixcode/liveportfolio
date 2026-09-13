@@ -14,11 +14,15 @@ const INITIAL_PROJECTS = [
 
 // Supabase Client Setup
 const SUPABASE_URL = 'https://jryrkpkzzrvgawkmljvt.supabase.co';
-const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY'; // Replace with your Project anon key from Supabase Settings -> API
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY'; // Replace when ready
 
 let supabase = null;
-if (window.supabase && SUPABASE_ANON_KEY !== 'YOUR_SUPABASE_ANON_KEY') {
-  supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+try {
+  if (window.supabase && SUPABASE_ANON_KEY && !SUPABASE_ANON_KEY.includes('YOUR_SUPABASE')) {
+    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+} catch (e) {
+  console.warn("Supabase client not initialized yet; running in offline/demo mode.", e);
 }
 
 let currentUser = null;
@@ -444,6 +448,13 @@ function initCanvas() {
 
 // Single Event Listener Entry Point
 window.addEventListener('DOMContentLoaded', () => {
-  initApp();
-  checkAuthSession();
+  try {
+    initApp();
+  } catch (err) {
+    console.error("Initialization error:", err);
+  }
+  
+  if (supabase) {
+    checkAuthSession();
+  }
 });
